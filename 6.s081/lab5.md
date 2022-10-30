@@ -54,3 +54,40 @@ xv6 page fault类型：加载页面错误（加载指令无法转换其虚拟地
 
 惰性分配（lazy）：首先，当应用程序调用`sbrk`时，内核增加地址空间，但在页表中将新地址标记为无效。其次，对于包含于其中的地址的页面错误，内核分配物理内存并将其映射到页表中。由于应用程序通常要求比他们需要的更多的内存，惰性分配可以称得上一次胜利: 内核仅在应用程序实际使用它时才分配内存。
 
+
+
+## Eliminate allocation from sbrk()
+
+删除growproc调用，保留增加进程大小
+
+输出：
+
+```bash
+init: starting sh
+$ echo hi
+usertrap(): unexpected scause 0x000000000000000f pid=3
+            sepc=0x0000000000001258 stval=0x0000000000004008
+va=0x0000000000004000 pte=0x0000000000000000
+panic: uvmunmap: not mapped
+```
+
+##  Lazy allocation
+
+发生page fault时，为错误位置分配内存（一页）
+
+* `r_scause`判断错误原因是否为page fault(13, 15)，`r_stavl`读取造成错误的虚拟地址
+* 参考`growproc`中对`uvmalloc`的调用中，对`kalloc`与`mappages`的调用方法，对`usertrap`的分配内存进行改写
+  * 错误情况：内存分配失败（无可用内存），分配页失败......(part3补充)
+* 分配页需要对齐，`PGROUNDDOWN`向下取整
+* 跳过`uvmunmap`中引起panic的部分：pte不存在与pte不可用
+
+## Lazytests and Usertests
+
+主要完成：对错误情况的处理（非法访问）
+
+1. `sbrk()`参数为负数：”缩小“
+2. 异常情况：地址增长时，上溢到trapframe以上；地址减少时，下溢到sp以下
+3. 异常情况：分配内存时，虚拟地址超过原本”虚假“的地址；回收内存时，虚拟地址发生下溢
+4. 正确的拷贝处理：跳过`uvmcopy`中引起panic部分：pte不存在与pte不可用
+5. 系统调用中传递有效地址
+   1. 首先搞清楚函数执行流程，在调用write后系统trap到内核态，执行copyin来把用户程序va处的内容复制到内核空间，此时若va处并未分配内存，walkaddr会返回0导致系统调用失败。因此我们要做的就是在walkaddr中分配内存
